@@ -11,7 +11,7 @@ on:
         type: string
 
       layers:
-        description: "Number of wooden layers"
+        description: "Number of intended wooden layers"
         required: true
         default: "6"
         type: choice
@@ -40,10 +40,16 @@ permissions:
 jobs:
   generate:
     name: Generate Laser Artwork
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
+      - name: Install image conversion tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y potrace
+          python3 -m pip install --break-system-packages Pillow
+
       - name: Generate AI silhouette
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -72,73 +78,55 @@ jobs:
 
           prompt = f"""
           Create professional black-and-white
-          silhouette artwork for laser cutting.
-
-          PROJECT:
-          A multilayer plywood shadow-box design.
+          silhouette artwork intended for
+          laser-cut plywood shadow boxes.
 
           SUBJECT:
           {description}
 
-          NUMBER OF INTENDED WOODEN LAYERS:
+          INTENDED NUMBER OF LAYERS:
           {layers}
 
-          FRAME SHAPE:
+          FRAME:
           {frame}
 
-          ARTWORK REQUIREMENTS:
+          STRICT ARTWORK REQUIREMENTS:
 
-          1. Use pure black silhouettes against
-             a completely white background.
+          - Pure black shapes on a white background.
+          - Flat 2D artwork viewed directly from front.
+          - Bold, clean, continuous contours.
+          - No photographs or wood textures.
+          - No gradients, shadows or 3D rendering.
+          - No grey shading or halftone patterns.
+          - No text, labels or measurements.
+          - Avoid tiny decorative details.
+          - Avoid narrow or fragile connections.
+          - Use clearly distinguishable objects.
+          - Maintain a balanced composition.
+          - Include a recognisable outer frame.
+          - Use strong positive and negative spaces.
 
-          2. Create clean, bold, continuous outlines
-             suitable for vector tracing.
+          COMPOSITION:
 
-          3. Use a completely flat 2D front view.
+          Arrange the scene so the major objects
+          could subsequently be assigned to
+          foreground, middle-ground and
+          background plywood layers.
 
-          4. No wood grain, photographs, shadows,
-             gradients, lighting effects or
-             three-dimensional rendering.
+          Avoid unnecessary overlapping objects.
 
-          5. Create a balanced composition with
-             clear foreground, middle-ground
-             and background elements.
-
-          6. Make the major objects visually
-             distinguishable so they can later
-             be assigned to separate layers.
-
-          7. Use large negative spaces and
-             avoid excessive fine detail.
-
-          8. Avoid thin, fragile structures
-             that would be unsuitable for
-             cutting from plywood.
-
-          9. Where practical, connect silhouettes
-             to surrounding structural shapes.
-
-          10. Do not include text, annotations,
-              measurements or watermarks.
+          Ensure that major silhouettes have
+          plausible structural connections.
 
           IMPORTANT:
 
-          This is artwork intended for subsequent
-          conversion into physical laser-cut layers.
+          Produce ONE clean master silhouette.
 
-          Do not create a photograph or illustration
-          of an assembled wooden product.
+          Do not create a photograph of an
+          assembled wooden product.
 
-          Do not use perspective or mockup effects.
-
-          Produce ONE clean, high-contrast,
-          black-and-white master silhouette.
-
-          The composition should be suitable for
-          further processing into approximately
-          {layers} separate plywood layers.
-
-          This image is a design concept.
+          This is a master design concept,
+          not an already-separated cutting file.
           """
 
           payload = {
@@ -158,7 +146,7 @@ jobs:
               method="POST"
           )
 
-          print("Generating LayerCraft artwork...")
+          print("Generating AI artwork...")
 
           try:
               with urllib.request.urlopen(
@@ -169,11 +157,12 @@ jobs:
 
           except urllib.error.HTTPError as error:
               print(
-                  "OpenAI API request failed:",
+                  "Image generation failed.",
+                  "HTTP status:",
                   error.code
               )
               raise RuntimeError(
-                  "Image generation failed."
+                  "OpenAI image generation failed."
               ) from error
 
           image_data = result["data"][0]["b64_json"]
@@ -181,18 +170,20 @@ jobs:
 
           os.makedirs("artwork", exist_ok=True)
 
-          output_path = "artwork/design.png"
-
-          with open(output_path, "wb") as output:
+          with open(
+              "artwork/design.png",
+              "wb"
+          ) as output:
               output.write(image_bytes)
 
-          project_info = {
+          project = {
               "description": description,
               "intended_layers": int(layers),
               "frame": frame,
-              "image": "design.png",
-              "status": "Concept artwork",
-              "laser_ready": False
+              "source_image": "design.png",
+              "vector_image": "master-outline.svg",
+              "laser_ready": False,
+              "status": "Unvalidated master artwork"
           }
 
           with open(
@@ -200,22 +191,111 @@ jobs:
               "w",
               encoding="utf-8"
           ) as output:
-              json.dump(
-                  project_info,
-                  output,
-                  indent=2
-              )
+              json.dump(project, output, indent=2)
 
-          print("Artwork successfully generated.")
-          print("Saved:", output_path)
-          print("Intended layers:", layers)
-          print("Frame:", frame)
+          print("AI image generated successfully.")
           PY
 
-      - name: Upload LayerCraft artwork
+      - name: Convert image to black and white
+        run: |
+          python3 - <<'PY'
+          from PIL import Image, ImageOps
+
+          image = Image.open(
+              "artwork/design.png"
+          ).convert("RGB")
+
+          # Convert to greyscale.
+          grey = ImageOps.grayscale(image)
+
+          # Remove intermediate tones.
+          black_white = grey.point(
+              lambda value: 0 if value < 128 else 255
+          )
+
+          black_white.save(
+              "artwork/black-white.png"
+          )
+
+          # Potrace accepts portable bitmap files.
+          black_white.convert("1").save(
+              "artwork/trace.pbm"
+          )
+
+          print(
+              "Black-and-white image prepared."
+          )
+          PY
+
+      - name: Trace image into SVG
+        run: |
+          potrace artwork/trace.pbm \
+            --svg \
+            --output artwork/master-outline.svg \
+            --turdsize 12 \
+            --opttolerance 0.4
+
+          test -s artwork/master-outline.svg
+
+          echo "SVG tracing completed."
+
+      - name: Create project instructions
+        run: |
+          cat > artwork/README.txt <<'EOF'
+          LAYERCRAFT STUDIO
+          =================
+
+          AI ARTWORK AND VECTOR TRACING
+
+          INCLUDED FILES
+
+          design.png
+          Original AI-generated artwork.
+
+          black-white.png
+          Simplified black-and-white artwork.
+
+          trace.pbm
+          Intermediate bitmap used for tracing.
+
+          master-outline.svg
+          Automatically traced vector outlines.
+
+          project.json
+          Project description and settings.
+
+
+          IMPORTANT SAFETY INFORMATION
+
+          The SVG is automatically traced artwork.
+
+          It is NOT yet a verified laser-cut design.
+
+          The intended number of layers is recorded
+          in project.json, but the artwork has not
+          been separated into physical depth layers.
+
+          Inspect all paths before laser cutting.
+
+          Check for:
+
+          - Disconnected or floating elements.
+          - Extremely thin connections.
+          - Duplicate or overlapping cut lines.
+          - Small internal pieces that may fall out.
+          - Correct dimensions and scaling.
+          - Suitable structural support.
+
+          Adjust the design in your vector editor
+          before importing it into your laser software.
+
+          Never leave your laser unattended.
+          EOF
+
+      - name: Upload complete LayerCraft project
         uses: actions/upload-artifact@v4
         with:
-          name: layercraft-artwork
+          name: layercraft-svg-project
           path: artwork/
           retention-days: 30
           if-no-files-found: error
