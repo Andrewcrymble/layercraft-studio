@@ -48,8 +48,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y potrace
-          python3 -m pip install \
-            --break-system-packages Pillow
+          python3 -m pip install --break-system-packages Pillow
 
       - name: Generate and validate AI artwork
         env:
@@ -67,7 +66,8 @@ jobs:
           import base64
           import urllib.request
           import urllib.error
-          from PIL import Image, ImageOps, ImageStat
+
+          from PIL import Image, ImageOps
 
           folder = "artwork"
 
@@ -94,91 +94,70 @@ jobs:
 
           save_report()
 
-          api_key = os.environ.get(
-              "OPENAI_API_KEY"
-          )
+          api_key = os.environ.get("OPENAI_API_KEY")
 
           if not api_key:
-              fail(
-                  "OPENAI_API_KEY is missing."
-              )
+              fail("OPENAI_API_KEY is missing.")
 
-          description = os.environ[
-              "DESCRIPTION"
-          ]
-
-          layers = int(
-              os.environ["LAYERS"]
-          )
-
+          description = os.environ["DESCRIPTION"]
+          layers = int(os.environ["LAYERS"])
           frame = os.environ["FRAME"]
 
           prompt = f"""
-          Produce a CLEAN, FLAT, BLACK AND WHITE
-          VECTOR-STYLE SILHOUETTE DESIGN.
+          Create professional flat black-and-white
+          silhouette artwork for a laser-cut
+          plywood shadow-box project.
 
           SUBJECT:
           {description}
 
-          FRAME:
-          {frame}
-
-          INTENDED PHYSICAL LAYERS:
+          INTENDED NUMBER OF LAYERS:
           {layers}
 
-          This artwork is intended for laser
-          cutting from thin plywood.
+          FRAME SHAPE:
+          {frame}
 
-          ESSENTIAL REQUIREMENTS:
+          STYLE:
 
-          The entire background must be PURE WHITE.
+          Pure black silhouettes.
+          Pure white background.
+          Flat front-facing 2D artwork.
+          Bold, continuous contours.
+          Clear negative spaces.
+          Large, recognisable shapes.
 
-          Use solid PURE BLACK shapes only.
-
-          The outside corners and margins of
-          the image must remain pure white.
-
-          Use thick, clearly defined outlines.
-
-          Produce a front-facing 2D composition.
-
-          All shapes must have clean edges.
-
-          Use large negative spaces.
-
-          Avoid tiny details and thin bridges.
-
-          Clearly distinguish the foreground,
+          The composition should have
+          distinguishable foreground,
           middle-ground and background objects.
 
-          Make the major shapes visually
-          separable for later processing.
+          Avoid fragile, narrow connections.
 
-          IMPORTANT RESTRICTIONS:
+          Avoid excessive fine details.
 
-          Absolutely NO wood texture.
-          NO wood grain.
-          NO photographic rendering.
-          NO 3D mockup.
-          NO shadows.
-          NO gradients.
-          NO grey background.
-          NO coloured background.
-          NO black background.
-          NO decorative paper texture.
-          NO text or labels.
+          Keep major elements visually
+          separable for later layer processing.
 
-          The result must look like a simple
-          black silhouette printed on a clean
-          white sheet of paper.
+          Do not generate:
+          - Wood textures
+          - Photographs
+          - Gradients
+          - Shadows
+          - Grey backgrounds
+          - Black backgrounds
+          - 3D product mockups
+          - Text or labels
 
-          Produce ONE master design.
+          IMPORTANT:
 
-          Do not depict an assembled wooden
-          product or a finished shadow box.
+          Produce one clean master silhouette,
+          not a photograph of a finished product.
+
+          Leave generous white space around
+          the outer edges of the composition.
 
           This is concept artwork that will
-          undergo further vector processing.
+          undergo vector tracing and further
+          engineering before laser cutting.
           """
 
           payload = {
@@ -190,14 +169,10 @@ jobs:
 
           request = urllib.request.Request(
               "https://api.openai.com/v1/images/generations",
-              data=json.dumps(
-                  payload
-              ).encode("utf-8"),
+              data=json.dumps(payload).encode("utf-8"),
               headers={
-                  "Authorization":
-                      f"Bearer {api_key}",
-                  "Content-Type":
-                      "application/json"
+                  "Authorization": f"Bearer {api_key}",
+                  "Content-Type": "application/json"
               },
               method="POST"
           )
@@ -224,18 +199,11 @@ jobs:
               )
 
           try:
-              encoded = result[
-                  "data"
-              ][0]["b64_json"]
-
-              image_bytes = base64.b64decode(
-                  encoded
-              )
+              encoded = result["data"][0]["b64_json"]
+              image_bytes = base64.b64decode(encoded)
 
           except (KeyError, IndexError, TypeError):
-              fail(
-                  "No valid image returned."
-              )
+              fail("No valid image returned.")
 
           with open(
               f"{folder}/design.png",
@@ -243,9 +211,9 @@ jobs:
           ) as f:
               f.write(image_bytes)
 
-          print("AI image saved.")
+          print("AI artwork generated.")
 
-          # Prepare image for analysis.
+          # Convert the image to greyscale.
 
           image = Image.open(
               f"{folder}/design.png"
@@ -253,66 +221,79 @@ jobs:
 
           grey = ImageOps.grayscale(image)
 
-          width, height = grey.size
+          # Measure the original image.
 
-          # Check the original background
-          # before applying any threshold.
+          original_width, original_height = grey.size
 
-          margin = max(
-              1,
-              int(min(width, height) * 0.04)
+          original_histogram = grey.histogram()
+
+          original_bright_fraction = (
+              sum(original_histogram[230:])
+              / (original_width * original_height)
           )
-
-          pixels = grey.load()
-
-          border_samples = []
-
-          for y in range(height):
-              for x in range(width):
-                  if (
-                      x < margin
-                      or x >= width - margin
-                      or y < margin
-                      or y >= height - margin
-                  ):
-                      border_samples.append(
-                          pixels[x, y]
-                      )
-
-          bright_border = sum(
-              1
-              for value in border_samples
-              if value >= 230
-          ) / len(border_samples)
 
           report["checks"][
-              "white_border_fraction"
-          ] = round(
-              bright_border,
-              4
-          )
+              "original_bright_fraction"
+          ] = round(original_bright_fraction, 4)
 
-          # Reject dark backgrounds rather
-          # than accidentally tracing them.
+          # Reject images that are almost
+          # entirely dark before processing.
 
-          if bright_border < 0.90:
+          if original_bright_fraction < 0.03:
               fail(
-                  "Background validation failed. "
-                  "The original image does not "
-                  "have sufficiently white margins. "
-                  "Try generating another design."
+                  "Original image is too dark "
+                  "for reliable silhouette tracing."
               )
 
-          # Convert to high-contrast artwork.
+          # Convert greyscale to pure
+          # black-and-white pixels.
 
           black_white = grey.point(
-              lambda value:
-                  0 if value < 150 else 255
+              lambda value: 0 if value < 150 else 255
           )
+
+          # Add a guaranteed white border.
+          # This prevents the white-margin
+          # validation failure encountered
+          # in the previous workflow.
+
+          border_size = max(
+              40,
+              int(
+                  min(
+                      original_width,
+                      original_height
+                  ) * 0.08
+              )
+          )
+
+          black_white = ImageOps.expand(
+              black_white,
+              border=border_size,
+              fill=255
+          )
+
+          width, height = black_white.size
+
+          report["checks"][
+              "added_white_border_pixels"
+          ] = border_size
+
+          report["checks"][
+              "processed_width"
+          ] = width
+
+          report["checks"][
+              "processed_height"
+          ] = height
+
+          # Save the processed image.
 
           black_white.save(
               f"{folder}/black-white.png"
           )
+
+          # Calculate the black-and-white balance.
 
           histogram = black_white.histogram()
 
@@ -326,94 +307,87 @@ jobs:
 
           report["checks"][
               "black_fraction"
-          ] = round(
-              black_fraction,
-              4
-          )
+          ] = round(black_fraction, 4)
 
           report["checks"][
               "white_fraction"
-          ] = round(
-              white_fraction,
-              4
+          ] = round(white_fraction, 4)
+
+          print(
+              "Black percentage:",
+              round(black_fraction * 100, 2)
           )
 
           print(
-              "Black pixel percentage:",
-              round(
-                  black_fraction * 100,
-                  2
-              )
+              "White percentage:",
+              round(white_fraction * 100, 2)
           )
-
-          print(
-              "White pixel percentage:",
-              round(
-                  white_fraction * 100,
-                  2
-              )
-          )
-
-          # Reject images that are almost
-          # entirely black or white.
 
           if not (
               0.03 <= black_fraction <= 0.80
           ):
               fail(
-                  "Image validation failed: "
-                  "unusable black/white balance."
+                  "Black-and-white balance failed. "
+                  "Image may be too dark or too empty."
               )
 
-          # Verify that white margins survived
-          # the conversion process.
+          # Check that the new outer
+          # border is completely white.
 
-          bw_pixels = black_white.load()
+          pixels = black_white.load()
 
-          border_white = sum(
-              1
-              for y in range(height)
-              for x in range(width)
-              if (
-                  x < margin
-                  or x >= width - margin
-                  or y < margin
-                  or y >= height - margin
-              )
-              and bw_pixels[x, y] == 255
+          margin = max(
+              1,
+              border_size // 2
           )
 
-          converted_border_fraction = (
-              border_white / len(border_samples)
+          border_total = 0
+          border_white = 0
+
+          for y in range(height):
+              for x in range(width):
+
+                  if (
+                      x < margin
+                      or x >= width - margin
+                      or y < margin
+                      or y >= height - margin
+                  ):
+                      border_total += 1
+
+                      if pixels[x, y] == 255:
+                          border_white += 1
+
+          border_fraction = (
+              border_white / border_total
           )
 
           report["checks"][
-              "converted_white_border_fraction"
-          ] = round(
-              converted_border_fraction,
-              4
-          )
+              "white_border_fraction"
+          ] = round(border_fraction, 4)
 
-          if converted_border_fraction < 0.95:
+          if border_fraction < 0.99:
               fail(
-                  "White margin check failed."
+                  "White margin validation failed."
               )
 
-          # Save the image in a format
-          # supported by Potrace.
+          # Export a Potrace-compatible bitmap.
 
           black_white.convert("1").save(
               f"{folder}/trace.pbm"
           )
+
+          # Save project information.
 
           project = {
               "description": description,
               "intended_layers": layers,
               "frame": frame,
               "master_image": "design.png",
+              "processed_image": "black-white.png",
               "vector_file": "master-outline.svg",
               "laser_ready": False,
-              "status": "Validated bitmap only"
+              "status": "Validated master bitmap"
           }
 
           with open(
@@ -421,11 +395,7 @@ jobs:
               "w",
               encoding="utf-8"
           ) as f:
-              json.dump(
-                  project,
-                  f,
-                  indent=2
-              )
+              json.dump(project, f, indent=2)
 
           report["status"] = (
               "bitmap_validation_passed"
@@ -433,9 +403,7 @@ jobs:
 
           save_report()
 
-          print(
-              "Image quality checks passed."
-          )
+          print("Image validation successful.")
           PY
 
       - name: Convert validated image to SVG
@@ -450,18 +418,19 @@ jobs:
 
           python3 - <<'PY'
           import json
-          import os
           import xml.etree.ElementTree as ET
 
-          svg_path = (
-              "artwork/master-outline.svg"
-          )
+          svg_path = "artwork/master-outline.svg"
 
           tree = ET.parse(svg_path)
           root = tree.getroot()
 
+          namespace = (
+              "{http://www.w3.org/2000/svg}"
+          )
+
           paths = root.findall(
-              ".//{http://www.w3.org/2000/svg}path"
+              f".//{namespace}path"
           )
 
           with open(
@@ -476,9 +445,11 @@ jobs:
 
           if not paths:
               report["status"] = "failed"
+
               report["warnings"].append(
-                  "SVG contains no paths."
+                  "SVG tracing produced no paths."
               )
+
           else:
               report["status"] = (
                   "master_svg_generated"
@@ -486,14 +457,13 @@ jobs:
 
           report["warnings"].append(
               "SVG has not been separated "
-              "into physical cutting layers."
+              "into individual physical layers."
           )
 
           report["warnings"].append(
-              "Structural support, minimum "
-              "feature size and duplicate "
-              "cut paths have not been "
-              "fully validated."
+              "Structural integrity, minimum "
+              "feature sizes and cutting "
+              "geometry require manual checks."
           )
 
           with open(
@@ -501,69 +471,78 @@ jobs:
               "w",
               encoding="utf-8"
           ) as f:
-              json.dump(
-                  report,
-                  f,
-                  indent=2
-              )
+              json.dump(report, f, indent=2)
 
           if not paths:
               raise RuntimeError(
-                  "SVG tracing produced no paths."
+                  "SVG contains no vector paths."
               )
 
           print(
-              "SVG generated with",
-              len(paths),
-              "path elements."
+              "SVG generated successfully."
+          )
+
+          print(
+              "Vector path elements:",
+              len(paths)
           )
           PY
 
-      - name: Create cutting instructions
-        if: success()
+      - name: Create project instructions
         run: |
           cat > artwork/README.txt <<'EOF'
           LAYERCRAFT STUDIO
           ========================
 
-          AUTOMATIC SVG PROJECT
+          AUTOMATIC SVG GENERATION
 
-          FILES:
+          INCLUDED FILES
 
           design.png
           Original AI-generated artwork.
 
           black-white.png
-          Validated black-and-white image.
+          Processed black-and-white artwork.
+
+          trace.pbm
+          Intermediate tracing bitmap.
 
           master-outline.svg
-          Automatically traced SVG.
+          Automatically traced SVG artwork.
 
           project.json
-          Project information.
+          Project settings.
 
           quality-report.json
-          Automated quality-check results.
+          Image and SVG validation results.
 
-          IMPORTANT:
 
-          This is a master SVG only.
+          IMPORTANT
 
-          It has NOT been separated into
-          individual wooden cutting layers.
+          This is a master vector design.
 
-          It has NOT passed full structural
-          or laser-cutting validation.
+          It is NOT yet separated into
+          individual wooden layers.
 
-          Check all geometry manually.
+          It has NOT been fully validated
+          for laser cutting.
 
-          Ensure that disconnected objects
-          are supported.
+          Before cutting:
 
-          Verify dimensions, minimum
-          feature sizes and cutting paths.
+          Check dimensions and scale.
 
-          Always perform a test cut.
+          Check for disconnected pieces.
+
+          Check minimum feature sizes.
+
+          Check overlapping cutting paths.
+
+          Confirm that every component
+          has adequate structural support.
+
+          Perform a test cut.
+
+          Never leave the laser unattended.
           EOF
 
       - name: Upload artwork and diagnostics
