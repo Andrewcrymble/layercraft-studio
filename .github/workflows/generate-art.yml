@@ -39,18 +39,19 @@ permissions:
 
 jobs:
   generate:
-    name: Generate Laser Artwork
+    name: Generate and Validate Artwork
     runs-on: ubuntu-24.04
     timeout-minutes: 15
 
     steps:
-      - name: Install image conversion tools
+      - name: Install image processing tools
         run: |
           sudo apt-get update
           sudo apt-get install -y potrace
-          python3 -m pip install --break-system-packages Pillow
+          python3 -m pip install \
+            --break-system-packages Pillow
 
-      - name: Generate AI silhouette
+      - name: Generate and validate AI artwork
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           DESCRIPTION: ${{ inputs.description }}
@@ -58,75 +59,126 @@ jobs:
           FRAME: ${{ inputs.frame }}
 
         run: |
+          mkdir -p artwork
+
           python3 - <<'PY'
           import os
           import json
           import base64
           import urllib.request
           import urllib.error
+          from PIL import Image, ImageOps, ImageStat
 
-          api_key = os.environ.get("OPENAI_API_KEY")
+          folder = "artwork"
+
+          report = {
+              "status": "started",
+              "laser_ready": False,
+              "checks": {},
+              "warnings": []
+          }
+
+          def save_report():
+              with open(
+                  f"{folder}/quality-report.json",
+                  "w",
+                  encoding="utf-8"
+              ) as f:
+                  json.dump(report, f, indent=2)
+
+          def fail(message):
+              report["status"] = "failed"
+              report["warnings"].append(message)
+              save_report()
+              raise RuntimeError(message)
+
+          save_report()
+
+          api_key = os.environ.get(
+              "OPENAI_API_KEY"
+          )
 
           if not api_key:
-              raise RuntimeError(
-                  "OPENAI_API_KEY is not configured."
+              fail(
+                  "OPENAI_API_KEY is missing."
               )
 
-          description = os.environ["DESCRIPTION"]
-          layers = os.environ["LAYERS"]
+          description = os.environ[
+              "DESCRIPTION"
+          ]
+
+          layers = int(
+              os.environ["LAYERS"]
+          )
+
           frame = os.environ["FRAME"]
 
           prompt = f"""
-          Create professional black-and-white
-          silhouette artwork intended for
-          laser-cut plywood shadow boxes.
+          Produce a CLEAN, FLAT, BLACK AND WHITE
+          VECTOR-STYLE SILHOUETTE DESIGN.
 
           SUBJECT:
           {description}
 
-          INTENDED NUMBER OF LAYERS:
-          {layers}
-
           FRAME:
           {frame}
 
-          STRICT ARTWORK REQUIREMENTS:
+          INTENDED PHYSICAL LAYERS:
+          {layers}
 
-          - Pure black shapes on a white background.
-          - Flat 2D artwork viewed directly from front.
-          - Bold, clean, continuous contours.
-          - No photographs or wood textures.
-          - No gradients, shadows or 3D rendering.
-          - No grey shading or halftone patterns.
-          - No text, labels or measurements.
-          - Avoid tiny decorative details.
-          - Avoid narrow or fragile connections.
-          - Use clearly distinguishable objects.
-          - Maintain a balanced composition.
-          - Include a recognisable outer frame.
-          - Use strong positive and negative spaces.
+          This artwork is intended for laser
+          cutting from thin plywood.
 
-          COMPOSITION:
+          ESSENTIAL REQUIREMENTS:
 
-          Arrange the scene so the major objects
-          could subsequently be assigned to
-          foreground, middle-ground and
-          background plywood layers.
+          The entire background must be PURE WHITE.
 
-          Avoid unnecessary overlapping objects.
+          Use solid PURE BLACK shapes only.
 
-          Ensure that major silhouettes have
-          plausible structural connections.
+          The outside corners and margins of
+          the image must remain pure white.
 
-          IMPORTANT:
+          Use thick, clearly defined outlines.
 
-          Produce ONE clean master silhouette.
+          Produce a front-facing 2D composition.
 
-          Do not create a photograph of an
-          assembled wooden product.
+          All shapes must have clean edges.
 
-          This is a master design concept,
-          not an already-separated cutting file.
+          Use large negative spaces.
+
+          Avoid tiny details and thin bridges.
+
+          Clearly distinguish the foreground,
+          middle-ground and background objects.
+
+          Make the major shapes visually
+          separable for later processing.
+
+          IMPORTANT RESTRICTIONS:
+
+          Absolutely NO wood texture.
+          NO wood grain.
+          NO photographic rendering.
+          NO 3D mockup.
+          NO shadows.
+          NO gradients.
+          NO grey background.
+          NO coloured background.
+          NO black background.
+          NO decorative paper texture.
+          NO text or labels.
+
+          The result must look like a simple
+          black silhouette printed on a clean
+          white sheet of paper.
+
+          Produce ONE master design.
+
+          Do not depict an assembled wooden
+          product or a finished shadow box.
+
+          This is concept artwork that will
+          undergo further vector processing.
           """
 
           payload = {
@@ -138,10 +190,14 @@ jobs:
 
           request = urllib.request.Request(
               "https://api.openai.com/v1/images/generations",
-              data=json.dumps(payload).encode("utf-8"),
+              data=json.dumps(
+                  payload
+              ).encode("utf-8"),
               headers={
-                  "Authorization": f"Bearer {api_key}",
-                  "Content-Type": "application/json"
+                  "Authorization":
+                      f"Bearer {api_key}",
+                  "Content-Type":
+                      "application/json"
               },
               method="POST"
           )
@@ -156,78 +212,233 @@ jobs:
                   result = json.load(response)
 
           except urllib.error.HTTPError as error:
-              print(
-                  "Image generation failed.",
-                  "HTTP status:",
-                  error.code
+              fail(
+                  "Image API returned HTTP "
+                  + str(error.code)
               )
-              raise RuntimeError(
-                  "OpenAI image generation failed."
-              ) from error
 
-          image_data = result["data"][0]["b64_json"]
-          image_bytes = base64.b64decode(image_data)
+          except Exception as error:
+              fail(
+                  "Image generation request failed: "
+                  + type(error).__name__
+              )
 
-          os.makedirs("artwork", exist_ok=True)
+          try:
+              encoded = result[
+                  "data"
+              ][0]["b64_json"]
+
+              image_bytes = base64.b64decode(
+                  encoded
+              )
+
+          except (KeyError, IndexError, TypeError):
+              fail(
+                  "No valid image returned."
+              )
 
           with open(
-              "artwork/design.png",
+              f"{folder}/design.png",
               "wb"
-          ) as output:
-              output.write(image_bytes)
+          ) as f:
+              f.write(image_bytes)
 
-          project = {
-              "description": description,
-              "intended_layers": int(layers),
-              "frame": frame,
-              "source_image": "design.png",
-              "vector_image": "master-outline.svg",
-              "laser_ready": False,
-              "status": "Unvalidated master artwork"
-          }
+          print("AI image saved.")
 
-          with open(
-              "artwork/project.json",
-              "w",
-              encoding="utf-8"
-          ) as output:
-              json.dump(project, output, indent=2)
-
-          print("AI image generated successfully.")
-          PY
-
-      - name: Convert image to black and white
-        run: |
-          python3 - <<'PY'
-          from PIL import Image, ImageOps
+          # Prepare image for analysis.
 
           image = Image.open(
-              "artwork/design.png"
+              f"{folder}/design.png"
           ).convert("RGB")
 
-          # Convert to greyscale.
           grey = ImageOps.grayscale(image)
 
-          # Remove intermediate tones.
+          width, height = grey.size
+
+          # Check the original background
+          # before applying any threshold.
+
+          margin = max(
+              1,
+              int(min(width, height) * 0.04)
+          )
+
+          pixels = grey.load()
+
+          border_samples = []
+
+          for y in range(height):
+              for x in range(width):
+                  if (
+                      x < margin
+                      or x >= width - margin
+                      or y < margin
+                      or y >= height - margin
+                  ):
+                      border_samples.append(
+                          pixels[x, y]
+                      )
+
+          bright_border = sum(
+              1
+              for value in border_samples
+              if value >= 230
+          ) / len(border_samples)
+
+          report["checks"][
+              "white_border_fraction"
+          ] = round(
+              bright_border,
+              4
+          )
+
+          # Reject dark backgrounds rather
+          # than accidentally tracing them.
+
+          if bright_border < 0.90:
+              fail(
+                  "Background validation failed. "
+                  "The original image does not "
+                  "have sufficiently white margins. "
+                  "Try generating another design."
+              )
+
+          # Convert to high-contrast artwork.
+
           black_white = grey.point(
-              lambda value: 0 if value < 128 else 255
+              lambda value:
+                  0 if value < 150 else 255
           )
 
           black_white.save(
-              "artwork/black-white.png"
+              f"{folder}/black-white.png"
           )
 
-          # Potrace accepts portable bitmap files.
-          black_white.convert("1").save(
-              "artwork/trace.pbm"
+          histogram = black_white.histogram()
+
+          black = histogram[0]
+          white = histogram[255]
+
+          total = black + white
+
+          black_fraction = black / total
+          white_fraction = white / total
+
+          report["checks"][
+              "black_fraction"
+          ] = round(
+              black_fraction,
+              4
+          )
+
+          report["checks"][
+              "white_fraction"
+          ] = round(
+              white_fraction,
+              4
           )
 
           print(
-              "Black-and-white image prepared."
+              "Black pixel percentage:",
+              round(
+                  black_fraction * 100,
+                  2
+              )
+          )
+
+          print(
+              "White pixel percentage:",
+              round(
+                  white_fraction * 100,
+                  2
+              )
+          )
+
+          # Reject images that are almost
+          # entirely black or white.
+
+          if not (
+              0.03 <= black_fraction <= 0.80
+          ):
+              fail(
+                  "Image validation failed: "
+                  "unusable black/white balance."
+              )
+
+          # Verify that white margins survived
+          # the conversion process.
+
+          bw_pixels = black_white.load()
+
+          border_white = sum(
+              1
+              for y in range(height)
+              for x in range(width)
+              if (
+                  x < margin
+                  or x >= width - margin
+                  or y < margin
+                  or y >= height - margin
+              )
+              and bw_pixels[x, y] == 255
+          )
+
+          converted_border_fraction = (
+              border_white / len(border_samples)
+          )
+
+          report["checks"][
+              "converted_white_border_fraction"
+          ] = round(
+              converted_border_fraction,
+              4
+          )
+
+          if converted_border_fraction < 0.95:
+              fail(
+                  "White margin check failed."
+              )
+
+          # Save the image in a format
+          # supported by Potrace.
+
+          black_white.convert("1").save(
+              f"{folder}/trace.pbm"
+          )
+
+          project = {
+              "description": description,
+              "intended_layers": layers,
+              "frame": frame,
+              "master_image": "design.png",
+              "vector_file": "master-outline.svg",
+              "laser_ready": False,
+              "status": "Validated bitmap only"
+          }
+
+          with open(
+              f"{folder}/project.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  project,
+                  f,
+                  indent=2
+              )
+
+          report["status"] = (
+              "bitmap_validation_passed"
+          )
+
+          save_report()
+
+          print(
+              "Image quality checks passed."
           )
           PY
 
-      - name: Trace image into SVG
+      - name: Convert validated image to SVG
         run: |
           potrace artwork/trace.pbm \
             --svg \
@@ -237,65 +448,129 @@ jobs:
 
           test -s artwork/master-outline.svg
 
-          echo "SVG tracing completed."
+          python3 - <<'PY'
+          import json
+          import os
+          import xml.etree.ElementTree as ET
 
-      - name: Create project instructions
+          svg_path = (
+              "artwork/master-outline.svg"
+          )
+
+          tree = ET.parse(svg_path)
+          root = tree.getroot()
+
+          paths = root.findall(
+              ".//{http://www.w3.org/2000/svg}path"
+          )
+
+          with open(
+              "artwork/quality-report.json",
+              encoding="utf-8"
+          ) as f:
+              report = json.load(f)
+
+          report["checks"][
+              "svg_path_count"
+          ] = len(paths)
+
+          if not paths:
+              report["status"] = "failed"
+              report["warnings"].append(
+                  "SVG contains no paths."
+              )
+          else:
+              report["status"] = (
+                  "master_svg_generated"
+              )
+
+          report["warnings"].append(
+              "SVG has not been separated "
+              "into physical cutting layers."
+          )
+
+          report["warnings"].append(
+              "Structural support, minimum "
+              "feature size and duplicate "
+              "cut paths have not been "
+              "fully validated."
+          )
+
+          with open(
+              "artwork/quality-report.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+              json.dump(
+                  report,
+                  f,
+                  indent=2
+              )
+
+          if not paths:
+              raise RuntimeError(
+                  "SVG tracing produced no paths."
+              )
+
+          print(
+              "SVG generated with",
+              len(paths),
+              "path elements."
+          )
+          PY
+
+      - name: Create cutting instructions
+        if: success()
         run: |
           cat > artwork/README.txt <<'EOF'
           LAYERCRAFT STUDIO
-          =================
+          ========================
 
-          AI ARTWORK AND VECTOR TRACING
+          AUTOMATIC SVG PROJECT
 
-          INCLUDED FILES
+          FILES:
 
           design.png
           Original AI-generated artwork.
 
           black-white.png
-          Simplified black-and-white artwork.
-
-          trace.pbm
-          Intermediate bitmap used for tracing.
+          Validated black-and-white image.
 
           master-outline.svg
-          Automatically traced vector outlines.
+          Automatically traced SVG.
 
           project.json
-          Project description and settings.
+          Project information.
 
+          quality-report.json
+          Automated quality-check results.
 
-          IMPORTANT SAFETY INFORMATION
+          IMPORTANT:
 
-          The SVG is automatically traced artwork.
+          This is a master SVG only.
 
-          It is NOT yet a verified laser-cut design.
+          It has NOT been separated into
+          individual wooden cutting layers.
 
-          The intended number of layers is recorded
-          in project.json, but the artwork has not
-          been separated into physical depth layers.
+          It has NOT passed full structural
+          or laser-cutting validation.
 
-          Inspect all paths before laser cutting.
+          Check all geometry manually.
 
-          Check for:
+          Ensure that disconnected objects
+          are supported.
 
-          - Disconnected or floating elements.
-          - Extremely thin connections.
-          - Duplicate or overlapping cut lines.
-          - Small internal pieces that may fall out.
-          - Correct dimensions and scaling.
-          - Suitable structural support.
+          Verify dimensions, minimum
+          feature sizes and cutting paths.
 
-          Adjust the design in your vector editor
-          before importing it into your laser software.
-
-          Never leave your laser unattended.
+          Always perform a test cut.
           EOF
 
-      - name: Upload complete LayerCraft project
+      - name: Upload artwork and diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: layercraft-svg-project
+          name: layercraft-validated-project
           path: artwork/
           retention-days: 30
-          if-no-files-found: error
+          if-no-files-found: warn
