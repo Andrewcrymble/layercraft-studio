@@ -1,0 +1,111 @@
+
+name: Generate LayerCraft Artwork
+
+on:
+  workflow_dispatch:
+    inputs:
+      description:
+        description: "Describe your artwork"
+        required: true
+        default: "A six-layer Nativity scene"
+        type: string
+      layers:
+        description: "Number of layers"
+        required: true
+        default: "6"
+        type: choice
+        options:
+          - "3"
+          - "4"
+          - "5"
+          - "6"
+          - "7"
+          - "8"
+      frame:
+        description: "Frame shape"
+        required: true
+        default: "Arch"
+        type: choice
+        options:
+          - Arch
+          - Circle
+          - Heart
+          - Rectangle
+
+permissions:
+  contents: read
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Generate AI artwork
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          DESCRIPTION: ${{ inputs.description }}
+          LAYERS: ${{ inputs.layers }}
+          FRAME: ${{ inputs.frame }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import json
+          import base64
+          import urllib.request
+
+          prompt = f"""
+          Create a front-facing layered plywood
+          shadow-box artwork concept.
+
+          Subject: {os.environ['DESCRIPTION']}
+          Layers: {os.environ['LAYERS']}
+          Frame: {os.environ['FRAME']}
+
+          Use bold silhouettes, clear negative
+          spaces and distinct depth planes.
+          Avoid fragile, floating details.
+          No text or labels.
+          """
+
+          payload = json.dumps({
+              "model": "gpt-image-1",
+              "prompt": prompt,
+              "size": "1024x1024",
+              "n": 1
+          }).encode()
+
+          request = urllib.request.Request(
+              "https://api.openai.com/v1/images/generations",
+              data=payload,
+              headers={
+                  "Authorization":
+                      "Bearer " + os.environ["OPENAI_API_KEY"],
+                  "Content-Type": "application/json"
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(
+              request, timeout=600
+          ) as response:
+              result = json.load(response)
+
+          image = base64.b64decode(
+              result["data"][0]["b64_json"]
+          )
+
+          os.makedirs("artwork", exist_ok=True)
+
+          with open("artwork/design.png", "wb") as f:
+              f.write(image)
+
+          print("Artwork generated successfully.")
+          PY
+
+      - name: Save artwork
+        uses: actions/upload-artifact@v4
+        with:
+          name: layercraft-artwork
+          path: artwork/design.png
+          retention-days: 30
